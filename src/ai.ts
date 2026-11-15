@@ -3,6 +3,9 @@ import { config } from "./config.js";
 export type GeneratedComment = { comment: string; evidence: string[] };
 
 export async function generateComment(title: string, article: string): Promise<GeneratedComment> {
+  if (!config.aiGatewayKey) {
+    throw new Error("AI_GATEWAY_API_KEY or VERCEL_OIDC_TOKEN is required to generate comment drafts");
+  }
   const prompt = `Write one helpful AWS Builder Center comment about the article below. It must be 60-420 characters, mention a concrete idea from the article, and either add a practical observation or ask one thoughtful technical question. Do not praise generically, promote anything, invent personal experience, or make claims not supported by the article. Return JSON only: {"comment":"...","evidence":["exact supporting idea"]}.\n\nTITLE: ${title}\n\nARTICLE:\n${article.slice(0, 12000)}`;
   const response = await fetch("https://ai-gateway.vercel.sh/v1/chat/completions", {
     method: "POST",

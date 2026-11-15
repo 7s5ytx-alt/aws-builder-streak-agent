@@ -1,16 +1,17 @@
 import { createHash } from "node:crypto";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { generateComment, passesQualityGate } from "../src/ai.js";
 import { BuilderBrowser } from "../src/browser.js";
 import { config } from "../src/config.js";
 import { beginRun, failRun, finishRun, previouslyCommented, recentCommentBodies, rememberArticle, reserveComment } from "../src/db.js";
 
-// Hobby plans allow a configured Function duration of up to 60 seconds.
-export const maxDuration = 60;
+// Vercel Hobby allows up to five minutes; Browser Run is still capped separately.
+export const maxDuration = 300;
 
-export default async function handler(request: Request): Promise<Response> {
-  if (request.headers.get("authorization") !== `Bearer ${config.cronSecret}`) return new Response("Unauthorized", { status: 401 });
+export default async function handler(request: IncomingMessage, response: ServerResponse): Promise<void> {
+  if (request.headers.authorization !== `Bearer ${config.cronSecret}`) return sendJson(response, 401, { ok: false, error: "Unauthorized" });
   const utcDate = new Date().toISOString().slice(0, 10);
-  if (await beginRun(utcDate) === "already-completed") return Response.json({ ok: true, skipped: "already completed", utcDate });
+  if (await beginRun(utcDate) === "already-completed") return sendJson(response, 200, { ok: true, skipped: "already completed", utcDate });
 
   let browser: BuilderBrowser | undefined;
   try {
@@ -36,12 +37,18 @@ export default async function handler(request: Request): Promise<Response> {
       drafted += 1;
     }
     await finishRun(utcDate);
-    return Response.json({ ok: true, utcDate, articlesRead: selected.length, commentsDrafted: drafted, note: "Comment drafts require user approval before publication." });
+    return sendJson(response, 200, { ok: true, utcDate, articlesRead: selected.length, commentsDrafted: drafted, note: "Comment drafts require user approval before publication." });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown failure";
     await failRun(utcDate, message);
-    return Response.json({ ok: false, utcDate, error: message }, { status: 500 });
+    return sendJson(response, 500, { ok: false, utcDate, error: message });
   } finally {
     await browser?.close();
   }
+}
+
+function sendJson(response: ServerResponse, status: number, payload: unknown): void {
+  response.statusCode = status;
+  response.setHeader("content-type", "application/json; charset=utf-8");
+  response.end(JSON.stringify(payload));
 }

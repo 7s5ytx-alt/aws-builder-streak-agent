@@ -5,7 +5,10 @@ export const config = {
   cfApiToken: required("CF_API_TOKEN"),
   authStateEncryptionKey: required("AUTH_STATE_ENCRYPTION_KEY"),
   setupSecret: required("SETUP_SECRET"),
-  aiGatewayKey: process.env.AI_GATEWAY_API_KEY ?? process.env.VERCEL_OIDC_TOKEN ?? required("AI_GATEWAY_API_KEY or VERCEL_OIDC_TOKEN"),
+  // AI is only needed during the scheduled drafting run. Keeping this optional
+  // lets the separate, owner-authenticated browser-session setup route work
+  // before an AI provider is configured.
+  aiGatewayKey: process.env.AI_GATEWAY_API_KEY ?? process.env.VERCEL_OIDC_TOKEN,
   aiModel: process.env.AI_MODEL ?? "openai/gpt-4o-mini",
   articlesPerDay: positiveInt("ARTICLES_PER_DAY", 3),
   commentsPerDay: positiveInt("COMMENTS_PER_DAY", 2),
