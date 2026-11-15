@@ -10,13 +10,18 @@ export default async function handler(request: IncomingMessage, response: Server
   const url = new URL(request.url ?? "/", `https://${request.headers.host ?? "localhost"}`);
   const action = url.searchParams.get("action");
   if (action === "create") return sendJson(response, 200, await createLiveSession());
+  if (action === "close") {
+    const sessionId = url.searchParams.get("sessionId");
+    if (!sessionId || !/^[a-zA-Z0-9_-]{8,200}$/.test(sessionId)) return sendJson(response, 400, { ok: false, error: "A valid sessionId is required" });
+    return sendJson(response, 200, await closeLiveSession(sessionId));
+  }
   if (action === "capture") {
     const sessionId = url.searchParams.get("sessionId");
     if (!sessionId || !/^[a-zA-Z0-9_-]{8,200}$/.test(sessionId)) return sendJson(response, 400, { ok: false, error: "A valid sessionId is required" });
     await BuilderBrowser.captureFromExistingSession(sessionId);
     return sendJson(response, 200, { ok: true, message: "Encrypted AWS session state saved" });
   }
-  return sendJson(response, 400, { ok: false, error: "Use action=create or action=capture" });
+  return sendJson(response, 400, { ok: false, error: "Use action=create, action=capture, or action=close" });
 }
 
 async function createLiveSession(): Promise<Record<string, unknown>> {
@@ -28,9 +33,18 @@ async function createLiveSession(): Promise<Record<string, unknown>> {
   return { ok: true, sessionId, liveViewUrl: target.devtoolsFrontendUrl, expiresIn: "The Live View URL expires in five minutes; finish AWS login then call capture before the 20-minute session ends." };
 }
 
+async function closeLiveSession(sessionId: string): Promise<Record<string, unknown>> {
+  const headers = { Authorization: `Bearer ${config.cfApiToken}` };
+  const closed = await cfFetch(`${CF}/${config.cfAccountId}/browser-run/devtools/browser/${sessionId}`, { method: "DELETE", headers });
+  return { ok: true, ...closed };
+}
+
 async function cfFetch(url: string, init: RequestInit): Promise<Record<string, unknown>> {
   const response = await fetch(url, init);
-  const envelope = await response.json() as Record<string, unknown>;
+  const raw = await response.text();
+  let envelope: Record<string, unknown>;
+  try { envelope = JSON.parse(raw) as Record<string, unknown>; }
+  catch { throw new Error(`Cloudflare Browser Run: ${response.status} ${raw.slice(0, 500)}`); }
   if (!response.ok) throw new Error(`Cloudflare Browser Run: ${JSON.stringify(envelope)}`);
   return (envelope.result as Record<string, unknown> | undefined) ?? envelope;
 }
