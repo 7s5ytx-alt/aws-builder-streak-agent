@@ -4,9 +4,30 @@ import { config } from "./config.js";
 const sql = neon(config.databaseUrl);
 
 export type Candidate = { url: string; title: string };
+export type EncryptedBrowserState = { ciphertext: string; iv: string; authTag: string };
+
+export async function loadBrowserState(): Promise<EncryptedBrowserState | null> {
+  const result = await sql`
+    select ciphertext, iv, auth_tag from encrypted_browser_state where singleton = true
+  ` as Array<{ ciphertext: string; iv: string; auth_tag: string }>;
+  const row = result[0];
+  return row ? { ciphertext: row.ciphertext, iv: row.iv, authTag: row.auth_tag } : null;
+}
+
+export async function saveBrowserState(state: EncryptedBrowserState): Promise<void> {
+  await sql`
+    insert into encrypted_browser_state (singleton, ciphertext, iv, auth_tag)
+    values (true, ${state.ciphertext}, ${state.iv}, ${state.authTag})
+    on conflict (singleton) do update set
+      ciphertext = excluded.ciphertext,
+      iv = excluded.iv,
+      auth_tag = excluded.auth_tag,
+      updated_at = now()
+  `;
+}
 
 export async function beginRun(utcDate: string): Promise<"start" | "already-completed"> {
-  const existing = await sql<{ status: string }>`select status from daily_runs where utc_date = ${utcDate}`;
+  const existing = await sql`select status from daily_runs where utc_date = ${utcDate}` as Array<{ status: string }>;
   if (existing[0]?.status === "completed") return "already-completed";
   await sql`
     insert into daily_runs (utc_date, status) values (${utcDate}, 'running')
@@ -29,7 +50,7 @@ export async function previouslyCommented(url: string): Promise<boolean> {
 }
 
 export async function recentCommentBodies(): Promise<string[]> {
-  const result = await sql<{ body: string }>`select body from posted_comments order by created_at desc limit 30`;
+  const result = await sql`select body from posted_comments order by created_at desc limit 30` as Array<{ body: string }>;
   return result.map((row) => row.body);
 }
 
@@ -42,12 +63,12 @@ export async function recordComment(utcDate: string, articleUrl: string, body: s
 }
 
 export async function reserveComment(utcDate: string, articleUrl: string, proposedBody: string): Promise<{ body: string; status: "planned" | "posted" }> {
-  const result = await sql<{ body: string; status: "planned" | "posted" }>`
+  const result = await sql`
     insert into comment_attempts (utc_date, article_url, body, status)
     values (${utcDate}, ${articleUrl}, ${proposedBody}, 'planned')
     on conflict (utc_date, article_url) do update set article_url = excluded.article_url
     returning body, status
-  `;
+  ` as Array<{ body: string; status: "planned" | "posted" }>;
   return result[0]!;
 }
 

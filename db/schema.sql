@@ -35,3 +35,14 @@ create table if not exists comment_attempts (
   created_at timestamptz not null default now(),
   primary key (utc_date, article_url)
 );
+
+-- Exactly one encrypted AWS Builder Center session state. It is encrypted in
+-- the Vercel function before it reaches Neon; this table never holds a secret
+-- in plaintext.
+create table if not exists encrypted_browser_state (
+  singleton boolean primary key default true check (singleton),
+  ciphertext text not null,
+  iv text not null,
+  auth_tag text not null,
+  updated_at timestamptz not null default now()
+);
