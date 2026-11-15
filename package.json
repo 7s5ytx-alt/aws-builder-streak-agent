@@ -6,6 +6,7 @@
   "scripts": {
     "check": "tsc --noEmit",
     "dev": "vercel dev",
+    "local:run": "node scripts/local-run.mjs",
     "deploy": "vercel --prod"
   },
   "dependencies": {
