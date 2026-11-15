@@ -26,11 +26,12 @@ export default async function handler(request: IncomingMessage, response: Server
 
 async function createLiveSession(): Promise<Record<string, unknown>> {
   const headers = { Authorization: `Bearer ${config.cfApiToken}` };
-  const session = await cfFetch(`${CF}/${config.cfAccountId}/browser-run/devtools/browser?keep_alive=1200000`, { method: "POST", headers });
+  // Keep the owner login window inside Browser Run's daily free allowance.
+  const session = await cfFetch(`${CF}/${config.cfAccountId}/browser-run/devtools/browser?keep_alive=480000`, { method: "POST", headers });
   const sessionId = session.sessionId as string | undefined;
   if (!sessionId) throw new Error("Cloudflare Browser Run did not return a sessionId");
   const target = await cfFetch(`${CF}/${config.cfAccountId}/browser-run/devtools/browser/${sessionId}/json/new?url=${encodeURIComponent(AWS_BUILDER)}`, { method: "PUT", headers });
-  return { ok: true, sessionId, liveViewUrl: target.devtoolsFrontendUrl, expiresIn: "The Live View URL expires in five minutes; finish AWS login then call capture before the 20-minute session ends." };
+  return { ok: true, sessionId, liveViewUrl: target.devtoolsFrontendUrl, expiresIn: "The Live View URL expires in five minutes. Finish AWS login and capture within the eight-minute browser session." };
 }
 
 async function closeLiveSession(sessionId: string): Promise<Record<string, unknown>> {
