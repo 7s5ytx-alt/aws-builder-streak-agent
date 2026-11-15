@@ -12,3 +12,4 @@ coverage/
 
 .env*
 .setup-session-token
+.cloudflare-session-id
