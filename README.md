@@ -1,13 +1,13 @@
 # AWS Builder streak agent
 
-Cloud job for daily AWS Builder Center activity: read a small set of articles, like content, generate article-grounded comments, and record a UTC-day audit trail.
+Cloud job for daily AWS Builder Center activity: read a small set of articles, like content, generate article-grounded comment drafts, and record a UTC-day audit trail.
 
 ## Safety and limits
 
 - It never stores passwords or browser cookies in the repository. The one stored AWS session is AES-256-GCM encrypted before it reaches Neon.
 - The owner signs in interactively through Cloudflare Live View once. If AWS re-authentication is needed, the run stops instead of attempting MFA.
-- A comment is planned in the database before posting. If a run is retried, it verifies the exact planned comment on the page instead of generating or posting a duplicate.
-- The current configuration caps activity at 3 articles and 2 comments per UTC day.
+- Comment drafts are saved in the database for you to review. Public posting is intentionally a user-approved step.
+- The current configuration caps activity at 3 articles and 2 comment drafts per UTC day.
 - The workflow cannot manufacture external likes, replies, or Wish votes; those engagement-based badges are tracked but not promised.
 
 ## Deploy

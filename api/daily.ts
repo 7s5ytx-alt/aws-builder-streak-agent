@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { generateComment, passesQualityGate } from "../src/ai.js";
 import { BuilderBrowser } from "../src/browser.js";
 import { config } from "../src/config.js";
-import { beginRun, failRun, finishRun, markCommentPosted, previouslyCommented, recentCommentBodies, recordComment, rememberArticle, reserveComment } from "../src/db.js";
+import { beginRun, failRun, finishRun, previouslyCommented, recentCommentBodies, rememberArticle, reserveComment } from "../src/db.js";
 
 // Hobby plans allow a configured Function duration of up to 60 seconds.
 export const maxDuration = 60;
@@ -22,24 +22,21 @@ export default async function handler(request: Request): Promise<Response> {
       if (selected.length === config.articlesPerDay) break;
     }
     const priorComments = await recentCommentBodies();
-    let posted = 0;
+    let drafted = 0;
     for (const article of selected) {
       const body = await browser.readArticle(article);
       await rememberArticle(article, createHash("sha256").update(body).digest("hex"));
       await browser.likeCurrentArticle();
-      if (posted >= config.commentsPerDay) continue;
+      if (drafted >= config.commentsPerDay) continue;
       const generated = await generateComment(article.title, body);
       if (!passesQualityGate(generated, priorComments, body)) continue;
       const attempt = await reserveComment(utcDate, article.url, generated.comment.trim());
       if (attempt.status === "posted") continue;
-      const remoteId = await browser.postComment(attempt.body);
-      await recordComment(utcDate, article.url, attempt.body, remoteId);
-      await markCommentPosted(utcDate, article.url);
       priorComments.push(attempt.body);
-      posted += 1;
+      drafted += 1;
     }
     await finishRun(utcDate);
-    return Response.json({ ok: true, utcDate, articlesRead: selected.length, commentsPosted: posted });
+    return Response.json({ ok: true, utcDate, articlesRead: selected.length, commentsDrafted: drafted, note: "Comment drafts require user approval before publication." });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown failure";
     await failRun(utcDate, message);
