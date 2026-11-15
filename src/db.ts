@@ -1,10 +1,13 @@
-import { sql } from "@vercel/postgres";
+import { neon } from "@neondatabase/serverless";
+import { config } from "./config.js";
+
+const sql = neon(config.databaseUrl);
 
 export type Candidate = { url: string; title: string };
 
 export async function beginRun(utcDate: string): Promise<"start" | "already-completed"> {
   const existing = await sql<{ status: string }>`select status from daily_runs where utc_date = ${utcDate}`;
-  if (existing.rows[0]?.status === "completed") return "already-completed";
+  if (existing[0]?.status === "completed") return "already-completed";
   await sql`
     insert into daily_runs (utc_date, status) values (${utcDate}, 'running')
     on conflict (utc_date) do update set status = 'running', started_at = now(), error = null
@@ -22,12 +25,12 @@ export async function rememberArticle(article: Candidate, bodyHash: string): Pro
 
 export async function previouslyCommented(url: string): Promise<boolean> {
   const result = await sql`select 1 from posted_comments where article_url = ${url} limit 1`;
-  return result.rowCount > 0;
+  return result.length > 0;
 }
 
 export async function recentCommentBodies(): Promise<string[]> {
   const result = await sql<{ body: string }>`select body from posted_comments order by created_at desc limit 30`;
-  return result.rows.map((row) => row.body);
+  return result.map((row) => row.body);
 }
 
 export async function recordComment(utcDate: string, articleUrl: string, body: string, remoteId: string | null): Promise<void> {
@@ -45,7 +48,7 @@ export async function reserveComment(utcDate: string, articleUrl: string, propos
     on conflict (utc_date, article_url) do update set article_url = excluded.article_url
     returning body, status
   `;
-  return result.rows[0]!;
+  return result[0]!;
 }
 
 export async function markCommentPosted(utcDate: string, articleUrl: string): Promise<void> {

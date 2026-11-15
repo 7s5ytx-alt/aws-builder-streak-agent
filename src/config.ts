@@ -1,5 +1,6 @@
 export const config = {
   cronSecret: required("CRON_SECRET"),
+  databaseUrl: required("DATABASE_URL"),
   browserWsEndpoint: required("BROWSER_WS_ENDPOINT"),
   aiGatewayKey: required("AI_GATEWAY_API_KEY"),
   aiModel: process.env.AI_MODEL ?? "openai/gpt-4o-mini",

@@ -12,7 +12,7 @@ Cloud job for daily AWS Builder Center activity: read a small set of articles, l
 
 ## Deploy
 
-1. Create a Vercel Postgres database and run `db/schema.sql` in its SQL console.
+1. Install the Neon Marketplace integration from Vercel, connect it to this project, and run `db/schema.sql` in its SQL console. It injects `DATABASE_URL` automatically.
 2. Create a persistent hosted browser profile. Sign in to AWS Builder Center manually, complete MFA, and provide its CDP endpoint as `BROWSER_WS_ENDPOINT`.
 3. Add every variable from `.env.example` to Vercel Project Settings. Use a long random `CRON_SECRET`.
 4. Install and verify locally when npm access is available:
