@@ -1,3 +1,4 @@
+import { Browserbase } from "@browserbasehq/sdk";
 import { chromium, type Browser, type Page } from "playwright-core";
 import { config } from "./config.js";
 import type { Candidate } from "./db.js";
@@ -6,7 +7,13 @@ export class BuilderBrowser {
   private constructor(private readonly browser: Browser, private readonly page: Page) {}
 
   static async connect(): Promise<BuilderBrowser> {
-    const browser = await chromium.connectOverCDP(config.browserWsEndpoint);
+    const browserbase = new Browserbase({ apiKey: config.browserbaseApiKey });
+    const session = await browserbase.sessions.create({
+      browserSettings: {
+        context: { id: config.browserbaseContextId, persist: true },
+      },
+    });
+    const browser = await chromium.connectOverCDP(session.connectUrl);
     const context = browser.contexts()[0];
     if (!context) throw new Error("Cloud browser has no persistent context");
     const page = context.pages()[0] ?? await context.newPage();
@@ -49,8 +56,7 @@ export class BuilderBrowser {
     return "verified-in-page";
   }
 
-  // The browser is a persistent remote profile. Vercel closes this function's
-  // websocket when the invocation ends; closing the remote browser could lose
-  // its authenticated session.
-  async close(): Promise<void> { void this.browser; }
+  // Closing a Browserbase session writes any changed cookies and storage back
+  // to its persistent Context, ready for the next daily run.
+  async close(): Promise<void> { await this.browser.close(); }
 }
