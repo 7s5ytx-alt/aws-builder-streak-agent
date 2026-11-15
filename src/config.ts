@@ -2,7 +2,7 @@ export const config = {
   cronSecret: required("CRON_SECRET"),
   databaseUrl: required("DATABASE_URL"),
   browserWsEndpoint: required("BROWSER_WS_ENDPOINT"),
-  aiGatewayKey: required("AI_GATEWAY_API_KEY"),
+  aiGatewayKey: process.env.AI_GATEWAY_API_KEY ?? process.env.VERCEL_OIDC_TOKEN ?? required("AI_GATEWAY_API_KEY or VERCEL_OIDC_TOKEN"),
   aiModel: process.env.AI_MODEL ?? "openai/gpt-4o-mini",
   articlesPerDay: positiveInt("ARTICLES_PER_DAY", 3),
   commentsPerDay: positiveInt("COMMENTS_PER_DAY", 2),
