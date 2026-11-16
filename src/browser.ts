@@ -6,25 +6,54 @@ import { loadBrowserState, saveBrowserState, type Candidate } from "./db.js";
 const BUILDER_ORIGIN = "https://builder.aws.com";
 
 export class BuilderBrowser {
-  private constructor(private readonly browser: Browser, private readonly context: BrowserContext, private readonly page: Page) {}
+  private constructor(
+    private readonly browser: Browser,
+    private readonly context: BrowserContext,
+    private readonly page: Page,
+    readonly accountUsed: string,
+  ) {}
 
   static async connect(): Promise<BuilderBrowser> {
-    const endpoint = `wss://api.cloudflare.com/client/v4/accounts/${config.cfAccountId}/browser-run/devtools/browser?keep_alive=60000`;
-    const browser = await chromium.connectOverCDP(endpoint, { headers: { Authorization: `Bearer ${config.cfApiToken}` } });
-    const context = browser.contexts()[0];
-    if (!context) throw new Error("Cloudflare Browser Run did not provide a browser context");
+    // Read the stored session BEFORE opening a browser. The old order opened
+    // one first and only then discovered there was nothing to restore, which
+    // spent Browser Run minutes to learn something the database already knew.
     const saved = await loadBrowserState();
-    if (!saved) {
-      await browser.close();
-      throw new Error("No encrypted AWS session is stored. Complete the one-time Live View setup first.");
-    }
+    if (!saved) throw new Error("No encrypted AWS session is stored. Run `npm run capture:local` first.");
     const state = decryptBrowserState(saved);
-    await context.addCookies(state.cookies);
-    const page = context.pages()[0] ?? await context.newPage();
-    await restoreLocalStorage(page, state);
-    await page.goto(`${BUILDER_ORIGIN}/`, { waitUntil: "domcontentloaded" });
-    if (/sign-in|login/i.test(page.url())) throw new Error("AWS Builder ID session has expired; complete the Live View setup again");
-    return new BuilderBrowser(browser, context, page);
+
+    // Each account has its own daily allowance, so an exhausted one answers
+    // 429 at the handshake and costs nothing. Trying the next is free.
+    const failures: string[] = [];
+    for (const account of config.cfAccounts) {
+      const endpoint = `wss://api.cloudflare.com/client/v4/accounts/${account.accountId}/browser-run/devtools/browser?keep_alive=60000`;
+      let browser: Browser;
+      try {
+        browser = await chromium.connectOverCDP(endpoint, { headers: { Authorization: `Bearer ${account.apiToken}` } });
+      } catch (error) {
+        failures.push(`${account.label}: ${firstLine(error)}`);
+        continue;
+      }
+
+      // Past the handshake the browser is real and already costing minutes.
+      // Anything failing from here is a genuine fault - an expired AWS session,
+      // a changed page - and the next account would fail identically, so close
+      // this one and surface the error rather than burning another allowance.
+      try {
+        const context = browser.contexts()[0];
+        if (!context) throw new Error("Cloudflare Browser Run did not provide a browser context");
+        await context.addCookies(state.cookies);
+        const page = context.pages()[0] ?? await context.newPage();
+        await restoreLocalStorage(page, state);
+        await page.goto(`${BUILDER_ORIGIN}/`, { waitUntil: "domcontentloaded" });
+        if (/sign-in|login/i.test(page.url())) throw new Error("AWS Builder ID session has expired; run `npm run capture:local` again");
+        return new BuilderBrowser(browser, context, page, account.label);
+      } catch (error) {
+        await browser.close().catch(() => undefined);
+        throw error;
+      }
+    }
+
+    throw new Error(`No Cloudflare account could start a browser (tried ${config.cfAccounts.length}). ${failures.join(" | ")}`);
   }
 
   static async captureFromExistingSession(sessionId: string): Promise<void> {
@@ -74,6 +103,14 @@ export class BuilderBrowser {
   }
 
   async close(): Promise<void> { await this.browser.close(); }
+}
+
+// Playwright's connect errors carry a multi-line call log. Only the first line
+// names the cause, and collecting three full logs makes the real message -
+// usually "429 Too Many Requests" - impossible to find.
+function firstLine(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.split("\n")[0]!.trim().slice(0, 160);
 }
 
 async function restoreLocalStorage(page: Page, state: BrowserState): Promise<void> {

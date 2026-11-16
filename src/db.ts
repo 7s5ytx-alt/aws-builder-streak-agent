@@ -26,6 +26,37 @@ export async function saveBrowserState(state: EncryptedBrowserState): Promise<vo
   `;
 }
 
+// Read-only views used by /api/session?action=status. The daily handler writes
+// its outcome to daily_runs and logs nothing to stdout, so without these the
+// only record of a run lives in a database nobody can reach from a laptop.
+export type RunSummary = { utcDate: string; status: string; startedAt: string; completedAt: string | null; error: string | null };
+
+export async function recentRuns(limit: number): Promise<RunSummary[]> {
+  const result = await sql`
+    select utc_date, status, started_at, completed_at, error
+    from daily_runs order by utc_date desc limit ${limit}
+  ` as Array<{ utc_date: unknown; status: string; started_at: unknown; completed_at: unknown; error: string | null }>;
+  return result.map((row) => ({
+    utcDate: String(row.utc_date).slice(0, 10),
+    status: row.status,
+    startedAt: String(row.started_at),
+    completedAt: row.completed_at === null ? null : String(row.completed_at),
+    error: row.error,
+  }));
+}
+
+export async function browserStateUpdatedAt(): Promise<string | null> {
+  const result = await sql`select updated_at from encrypted_browser_state where singleton = true` as Array<{ updated_at: unknown }>;
+  return result[0] ? String(result[0].updated_at) : null;
+}
+
+export async function recentDrafts(limit: number): Promise<Array<{ utcDate: string; articleUrl: string; status: string; body: string }>> {
+  const result = await sql`
+    select utc_date, article_url, status, body from comment_attempts order by created_at desc limit ${limit}
+  ` as Array<{ utc_date: unknown; article_url: string; status: string; body: string }>;
+  return result.map((row) => ({ utcDate: String(row.utc_date).slice(0, 10), articleUrl: row.article_url, status: row.status, body: row.body }));
+}
+
 export async function beginRun(utcDate: string): Promise<"start" | "already-completed"> {
   const existing = await sql`select status from daily_runs where utc_date = ${utcDate}` as Array<{ status: string }>;
   if (existing[0]?.status === "completed") return "already-completed";
