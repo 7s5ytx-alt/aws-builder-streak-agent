@@ -56,9 +56,19 @@ if (!setupSecret) {
   process.exit(1);
 }
 
-function isAwsDomain(domain) {
+// AWS plus the identity provider. The Google cookies are needed because
+// Builder Center refreshes its short-lived tokens through SSO in the
+// background; without them the replayed session goes anonymous within the
+// hour and every like is silently ignored. An allowlist, not "everything in
+// the profile", so unrelated sites stay out of the blob.
+const CAPTURED_DOMAIN_SUFFIXES = [
+  "aws.com", "amazon.com", "amazonaws.com", "aws",
+  "google.com", "googleapis.com", "googleusercontent.com", "accounts.google.com",
+];
+
+function isCapturedDomain(domain) {
   const host = String(domain).toLowerCase().replace(/^\./, "");
-  return ["aws.com", "amazon.com", "amazonaws.com", "aws"].some((suffix) => host === suffix || host.endsWith("." + suffix));
+  return CAPTURED_DOMAIN_SUFFIXES.some((suffix) => host === suffix || host.endsWith("." + suffix));
 }
 
 console.log("Opening your Chrome. Profile: " + PROFILE_DIR);
@@ -97,8 +107,9 @@ const signedOutMarker =
 
 const currentUrl = page.url();
 const allCookies = await context.cookies();
-const awsCookies = allCookies.filter((cookie) => isAwsDomain(cookie.domain));
+const awsCookies = allCookies.filter((cookie) => isCapturedDomain(cookie.domain));
 const meaningful = awsCookies.filter((cookie) => !NOISE_COOKIE.test(cookie.name));
+const providerCount = awsCookies.filter((cookie) => /google/i.test(cookie.domain)).length;
 
 const localStorageItems = await page
   .evaluate(() => Object.entries(window.localStorage).map(([name, value]) => ({ name, value })))
@@ -106,7 +117,7 @@ const localStorageItems = await page
 
 console.log("  page url            : " + currentUrl);
 console.log("  sign-in button shown: " + (signedOutMarker ? "YES - looks signed OUT" : "no"));
-console.log("  aws cookies         : " + awsCookies.length + " (" + meaningful.length + " beyond analytics)");
+console.log("  cookies captured    : " + awsCookies.length + " (" + meaningful.length + " beyond analytics, " + providerCount + " from the sign-in provider)");
 console.log("  non-analytics names : " + (meaningful.map((c) => c.name).join(", ") || "(none)"));
 console.log("  localStorage keys   : " + (localStorageItems.map((i) => i.name).join(", ") || "(none)"));
 console.log("");

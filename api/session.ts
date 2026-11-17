@@ -1,7 +1,7 @@
-import { BuilderBrowser } from "../src/browser.js";
+import { BuilderBrowser, isCapturedDomain } from "../src/browser.js";
 import { config } from "../src/config.js";
-import { encryptBrowserState, type BrowserState } from "../src/crypto.js";
-import { browserStateUpdatedAt, recentDrafts, recentRuns, saveBrowserState } from "../src/db.js";
+import { decryptBrowserState, encryptBrowserState, type BrowserState } from "../src/crypto.js";
+import { browserStateUpdatedAt, loadBrowserState, recentDrafts, recentRuns, saveBrowserState } from "../src/db.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 const CF = "https://api.cloudflare.com/client/v4/accounts";
@@ -42,10 +42,58 @@ export default async function handler(request: IncomingMessage, response: Server
   // nothing, so this is the only way to find out whether a scheduled run
   // worked without direct database access.
   if (action === "status") {
-    const [runs, sessionStateSavedAt, drafts] = await Promise.all([recentRuns(7), browserStateUpdatedAt(), recentDrafts(5)]);
-    return sendJson(response, 200, { ok: true, sessionStateSavedAt, runs, drafts });
+    const [runs, sessionStateSavedAt, drafts, session] = await Promise.all([recentRuns(7), browserStateUpdatedAt(), recentDrafts(5), describeStoredSession()]);
+    return sendJson(response, 200, { ok: true, sessionStateSavedAt, session, runs, drafts });
   }
   return sendJson(response, 400, { ok: false, error: "Use action=create, action=capture, action=import, action=status, or action=close" });
+}
+
+// Reports WHEN the stored session dies, never what it contains. Only dates and
+// counts leave this function - no cookie names, no values.
+//
+// This matters because the session expiring is the single thing that silently
+// ends a streak, and until now the only way to find out was a failed run.
+async function describeStoredSession(): Promise<Record<string, unknown>> {
+  const saved = await loadBrowserState();
+  if (!saved) return { stored: false, note: "No session stored. Run `npm run capture:local`." };
+
+  let state: BrowserState;
+  try { state = decryptBrowserState(saved); }
+  catch { return { stored: true, readable: false, note: "Stored state could not be decrypted; AUTH_STATE_ENCRYPTION_KEY may have changed." }; }
+
+  const now = Date.now();
+  const days = (ms: number) => Math.round((ms - now) / 86_400_000);
+
+  // Playwright reports a cookie expiry in SECONDS, and uses -1 for a session
+  // cookie that dies when the browser closes. Those cannot be reasoned about,
+  // so they are counted separately rather than folded into the maximum.
+  const dated = state.cookies.filter((cookie) => typeof cookie.expires === "number" && cookie.expires > 0);
+  const sessionOnly = state.cookies.length - dated.length;
+  const soonest = dated.length ? Math.min(...dated.map((cookie) => cookie.expires * 1000)) : null;
+  const latest = dated.length ? Math.max(...dated.map((cookie) => cookie.expires * 1000)) : null;
+
+  // Builder Center records its own expiry in localStorage. Accept either an
+  // epoch number or an ISO string, since the format is not documented.
+  const builderEntry = state.origins.find((origin) => origin.origin === BUILDER_ORIGIN)?.localStorage.find((item) => item.name === "builderSessionExpiresAt");
+  let builderExpiresAt: number | null = null;
+  if (builderEntry) {
+    const numeric = Number(builderEntry.value);
+    const parsed = Number.isFinite(numeric) && numeric > 0 ? (numeric > 1e12 ? numeric : numeric * 1000) : Date.parse(builderEntry.value);
+    if (Number.isFinite(parsed)) builderExpiresAt = parsed;
+  }
+
+  return {
+    stored: true,
+    readable: true,
+    cookies: state.cookies.length,
+    cookiesWithoutExpiry: sessionOnly,
+    builderSessionExpiresAt: builderExpiresAt === null ? null : new Date(builderExpiresAt).toISOString(),
+    builderSessionDaysLeft: builderExpiresAt === null ? null : days(builderExpiresAt),
+    soonestCookieExpiry: soonest === null ? null : new Date(soonest).toISOString(),
+    soonestCookieDaysLeft: soonest === null ? null : days(soonest),
+    latestCookieExpiry: latest === null ? null : new Date(latest).toISOString(),
+    latestCookieDaysLeft: latest === null ? null : days(latest),
+  };
 }
 
 async function readJsonBody(request: IncomingMessage): Promise<unknown> {
@@ -64,14 +112,11 @@ async function readJsonBody(request: IncomingMessage): Promise<unknown> {
   }
 }
 
-// Only AWS-owned cookie domains are stored. A locally captured profile also
-// holds the identity provider's own cookies, and those are both useless here
-// (the scheduled run never repeats the sign-in) and the last thing that should
-// be persisted server-side. Dropping them keeps the stored blob minimal.
-function isAwsDomain(domain: string): boolean {
-  const host = domain.toLowerCase().replace(/^\./, "");
-  return ["aws.com", "amazon.com", "amazonaws.com", "aws"].some((suffix) => host === suffix || host.endsWith("." + suffix));
-}
+// The domain allowlist lives in src/browser.ts and is imported, not copied.
+// The import endpoint and the refresh-on-run path must agree exactly: if one
+// keeps Google's cookies and the other drops them, the session silently goes
+// anonymous and every like is ignored. That is not hypothetical - it is what
+// happened for two days.
 
 function toBrowserState(payload: unknown): BrowserState {
   if (typeof payload !== "object" || payload === null) throw new Error("Expected a JSON object");
@@ -81,9 +126,9 @@ function toBrowserState(payload: unknown): BrowserState {
   const kept = cookies.filter((cookie): cookie is BrowserState["cookies"][number] => {
     if (typeof cookie !== "object" || cookie === null) return false;
     const { name, value, domain } = cookie as Record<string, unknown>;
-    return typeof name === "string" && name.length > 0 && typeof value === "string" && typeof domain === "string" && isAwsDomain(domain);
+    return typeof name === "string" && name.length > 0 && typeof value === "string" && typeof domain === "string" && isCapturedDomain(domain);
   });
-  if (kept.length === 0) throw new Error("No AWS cookies in the payload; the capture was probably not signed in");
+  if (kept.length === 0) throw new Error("No AWS or sign-in cookies in the payload; the capture was probably not signed in");
 
   const originList: unknown[] = Array.isArray(origins) ? origins : [];
   const keptOrigins = originList

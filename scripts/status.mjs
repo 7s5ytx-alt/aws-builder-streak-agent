@@ -41,6 +41,40 @@ const SYMBOL = { completed: "[ OK ]", failed: "[FAIL]", running: "[ .. ]" };
 
 console.log("");
 console.log("Saved AWS session : " + (data.sessionStateSavedAt ?? "NONE - run npm run capture:local"));
+
+const session = data.session;
+if (session?.readable) {
+  const line = (label, iso, days) => {
+    if (!iso) return;
+    const when = String(iso).slice(0, 10);
+    const left = days === null || days === undefined ? "" : `  (${days} day${Math.abs(days) === 1 ? "" : "s"}${days < 0 ? " AGO - already expired" : " left"})`;
+    console.log("  " + label.padEnd(22) + when + left);
+  };
+  line("Builder session ends", session.builderSessionExpiresAt, session.builderSessionDaysLeft);
+  line("First cookie expires", session.soonestCookieExpiry, session.soonestCookieDaysLeft);
+  line("Last cookie expires", session.latestCookieExpiry, session.latestCookieDaysLeft);
+  console.log("  " + "cookies stored".padEnd(22) + session.cookies + (session.cookiesWithoutExpiry ? `  (${session.cookiesWithoutExpiry} without an expiry date)` : ""));
+  // The verdict follows the LONGEST-lived cookie, not the soonest.
+  //
+  // Builder Center mixes short-lived CSRF and refresh tokens (minutes) with a
+  // long-lived auth cookie (a year). The short ones are stale almost
+  // immediately and the site reissues them on each visit, so treating them as
+  // a deadline reported EXPIRED while the agent was demonstrably still signed
+  // in. Only the long-lived cookie going means the login is really gone.
+  const longest = session.latestCookieDaysLeft;
+  console.log("");
+  if (typeof longest === "number" && longest <= 0) {
+    console.log("  >> Login cookie has expired. Run npm run capture:local and sign in again.");
+  } else if (typeof longest === "number" && longest <= 7) {
+    console.log(`  >> Login cookie expires in about ${longest} day(s). Re-capture soon.`);
+  } else if (typeof longest === "number") {
+    console.log(`  >> Login cookie is good for about ${longest} more days.`);
+    console.log("     The short-lived entries above are refresh tokens and are stale by design.");
+  }
+  console.log("     The runs below are the real proof: a session-expired failure says so plainly.");
+} else if (session && !session.stored) {
+  console.log("  " + session.note);
+}
 console.log("");
 
 if (data.runs.length === 0) {

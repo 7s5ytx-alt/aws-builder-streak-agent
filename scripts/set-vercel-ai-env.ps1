@@ -11,6 +11,11 @@
 # Authorization header on 2026-11-16. src/config.ts now trims every value on
 # read, so that class of fault cannot reach an HTTP header again.
 
+# -Only limits the push to named variables. Each one is a slow npx round trip,
+# and re-sending a value Vercel already holds just creates a window where the
+# variable is briefly missing.
+param([string[]]$Only)
+
 $envFile = Join-Path $PSScriptRoot "..\.env.cloudflare"
 if (-not (Test-Path $envFile)) { throw ".env.cloudflare not found at $envFile" }
 
@@ -25,6 +30,9 @@ foreach ($line in Get-Content $envFile) {
 # secrets, and keeping them readable makes them easy to check in the dashboard.
 $names = @("AI_BASE_URL", "AI_MODEL", "AI_GATEWAY_API_KEY")
 $sensitive = @{ "AI_GATEWAY_API_KEY" = $true }
+
+if ($Only) { $names = $names | Where-Object { $Only -contains $_ } }
+if ($names.Count -eq 0) { throw "Nothing selected to set." }
 
 foreach ($name in $names) {
   if (-not $values.ContainsKey($name)) { throw "$name is missing from .env.cloudflare" }

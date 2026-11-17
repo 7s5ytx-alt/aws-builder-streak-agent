@@ -14,3 +14,4 @@ coverage/
 .setup-session-token
 .cloudflare-session-id
 local-browser-profile/
+publish-failure.png
