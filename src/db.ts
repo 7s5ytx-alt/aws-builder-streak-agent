@@ -57,9 +57,13 @@ export async function recentDrafts(limit: number): Promise<Array<{ utcDate: stri
   return result.map((row) => ({ utcDate: String(row.utc_date).slice(0, 10), articleUrl: row.article_url, status: row.status, body: row.body }));
 }
 
-export async function beginRun(utcDate: string): Promise<"start" | "already-completed"> {
+// `force` re-opens a day that already completed. Only the owner-authenticated
+// path sets it; the cron never does, so the once-a-day guarantee still holds
+// for scheduled runs. It exists because verifying a fix otherwise means
+// waiting until tomorrow.
+export async function beginRun(utcDate: string, force = false): Promise<"start" | "already-completed"> {
   const existing = await sql`select status from daily_runs where utc_date = ${utcDate}` as Array<{ status: string }>;
-  if (existing[0]?.status === "completed") return "already-completed";
+  if (!force && existing[0]?.status === "completed") return "already-completed";
   await sql`
     insert into daily_runs (utc_date, status) values (${utcDate}, 'running')
     on conflict (utc_date) do update set status = 'running', started_at = now(), error = null
@@ -113,4 +117,87 @@ export async function finishRun(utcDate: string): Promise<void> {
 
 export async function failRun(utcDate: string, error: string): Promise<void> {
   await sql`update daily_runs set status = 'failed', error = ${error.slice(0, 2000)} where utc_date = ${utcDate}`;
+}
+
+// --- Wishlist voting -------------------------------------------------------
+//
+// The vote button is a toggle with no voted-state in the DOM, so a wish voted
+// last week looks identical to one never voted. Clicking it again removes the
+// vote. This table is the agent's memory of what it has already voted for,
+// and it is the primary guard; the count check in src/wishlist.ts is the
+// safety net for votes cast outside the agent.
+
+export async function alreadyVoted(wishUrl: string): Promise<boolean> {
+  const result = await sql`select 1 from wish_votes where wish_url = ${wishUrl}` as unknown[];
+  return result.length > 0;
+}
+
+export async function recordWishVote(wishUrl: string, title: string, utcDate: string, isoWeek: string): Promise<void> {
+  await sql`
+    insert into wish_votes (wish_url, title, utc_date, iso_week)
+    values (${wishUrl}, ${title}, ${utcDate}, ${isoWeek})
+    on conflict (wish_url) do nothing
+  `;
+}
+
+export async function votedThisWeek(isoWeek: string): Promise<boolean> {
+  const result = await sql`select 1 from wish_votes where iso_week = ${isoWeek} limit 1` as unknown[];
+  return result.length > 0;
+}
+
+export async function recentWishVotes(limit: number): Promise<Array<{ wishUrl: string; title: string; isoWeek: string }>> {
+  const result = await sql`
+    select wish_url, title, iso_week from wish_votes order by created_at desc limit ${limit}
+  ` as Array<{ wish_url: string; title: string; iso_week: string }>;
+  return result.map((row) => ({ wishUrl: row.wish_url, title: row.title, isoWeek: row.iso_week }));
+}
+
+// Creates the wishlist table if it is missing, so a deploy cannot ship code
+// that queries a table nobody created. The local .env files have their secrets
+// redacted by `vercel env pull`, so the database is unreachable from a laptop
+// and an out-of-band migration step would simply never be run. Both statements
+// are "if not exists", so this costs one cheap round trip per weekly run.
+export async function ensureWishVotesTable(): Promise<void> {
+  await sql`
+    create table if not exists wish_votes (
+      wish_url text primary key,
+      title text not null,
+      utc_date text not null,
+      iso_week text not null,
+      created_at timestamptz not null default now()
+    )
+  `;
+  await sql`create index if not exists wish_votes_iso_week on wish_votes (iso_week)`;
+}
+
+// --- Article publishing (4-week publishing streak badge) -------------------
+
+export async function ensurePublicationsTable(): Promise<void> {
+  await sql`
+    create table if not exists publications (
+      id serial primary key,
+      iso_week text not null,
+      utc_date text not null,
+      title text not null,
+      topic text not null,
+      created_at timestamptz not null default now()
+    )
+  `;
+  await sql`create index if not exists publications_iso_week on publications (iso_week)`;
+}
+
+export async function publishedThisWeek(isoWeek: string): Promise<boolean> {
+  const result = await sql`select 1 from publications where iso_week = ${isoWeek} limit 1` as unknown[];
+  return result.length > 0;
+}
+
+export async function recordPublication(isoWeek: string, utcDate: string, title: string, topic: string): Promise<void> {
+  await sql`insert into publications (iso_week, utc_date, title, topic) values (${isoWeek}, ${utcDate}, ${title}, ${topic})`;
+}
+
+// Past titles steer the next article away from repeating itself; a fixed
+// prompt otherwise produces four near-identical pieces over four weeks.
+export async function recentPublicationTitles(limit: number): Promise<string[]> {
+  const result = await sql`select title from publications order by created_at desc limit ${limit}` as Array<{ title: string }>;
+  return result.map((row) => row.title);
 }

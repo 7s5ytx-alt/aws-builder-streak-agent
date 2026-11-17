@@ -104,8 +104,121 @@ async function survey(label, url) {
   for (const f of fields) console.log(`    - <${f.tag}> placeholder="${f.placeholder}" aria-label="${f.label}"`);
 }
 
+// An article page is where postComment failed: it waited 8s for a plain
+// <textarea> that is not there. Builder Center most likely uses a
+// contenteditable rich-text box, or only renders the composer after a click.
+const ARTICLE = process.env.INSPECT_ARTICLE
+  ?? "https://builder.aws.com/content/3M3njUsB5gh6hyRLp6PMjRBLciH/building-zero-trust-on-aws-in-five-hands-on-parts";
+
+await survey("ARTICLE (comment composer lives here)", ARTICLE);
+
+// The composer is often behind a button. Report anything that looks like the
+// way in, so the fix targets a real control rather than a guess.
+try {
+  const commentish = await page
+    .locator("button, [role=button], a")
+    .evaluateAll((nodes) =>
+      nodes
+        .map((n) => ({
+          text: (n.textContent ?? "").trim().replace(/\s+/g, " ").slice(0, 40),
+          label: n.getAttribute("aria-label") ?? "",
+        }))
+        .filter((n) => /comment|reply|respond|discussion|add a/i.test(n.text + " " + n.label))
+        .slice(0, 15),
+    );
+  console.log("  controls mentioning comment/reply:");
+  if (commentish.length === 0) console.log("    (none - the composer may need a scroll or a sign-in)");
+  for (const c of commentish) console.log(`    - "${c.text}"   aria-label="${c.label}"`);
+} catch (error) {
+  console.log("  comment-control scan failed: " + (error instanceof Error ? error.message : String(error)));
+}
+
+// The composer does not exist until "Comment on this article" is clicked, so
+// look again afterwards. This OPENS the box and reports what it is - it never
+// types and never submits.
+console.log("");
+console.log("=".repeat(70));
+console.log("COMPOSER PROBE (clicks 'Comment on this article', submits nothing)");
+console.log("=".repeat(70));
+try {
+  const opener = page.getByRole("button", { name: /^\s*comment on this article/i }).first();
+  if (!(await opener.isVisible().catch(() => false))) {
+    console.log("  no 'Comment on this article' control found");
+  } else {
+    await opener.scrollIntoViewIfNeeded().catch(() => undefined);
+    await opener.click({ timeout: 8000 });
+    await page.waitForTimeout(3000);
+
+    const fields = await page
+      .locator("textarea, input[type=text], [contenteditable=true], [role=textbox]")
+      .evaluateAll((nodes) =>
+        nodes.map((n) => ({
+          tag: n.tagName.toLowerCase(),
+          role: n.getAttribute("role") ?? "",
+          editable: n.getAttribute("contenteditable") ?? "",
+          placeholder: n.getAttribute("placeholder") ?? n.getAttribute("data-placeholder") ?? "",
+          label: n.getAttribute("aria-label") ?? "",
+          visible: !!(n.getBoundingClientRect().width && n.getBoundingClientRect().height),
+        })),
+      );
+    console.log("  text inputs after opening (" + fields.length + "):");
+    for (const f of fields) {
+      console.log(`    <${f.tag}> role="${f.role}" contenteditable="${f.editable}" visible=${f.visible}`);
+      console.log(`        placeholder="${f.placeholder}"  aria-label="${f.label}"`);
+    }
+
+    const submits = await page
+      .locator("button, [role=button]")
+      .evaluateAll((nodes) =>
+        nodes
+          .map((n) => ({
+            text: (n.textContent ?? "").trim().replace(/\s+/g, " ").slice(0, 30),
+            label: n.getAttribute("aria-label") ?? "",
+            disabled: n.hasAttribute("disabled") || n.getAttribute("aria-disabled") === "true",
+          }))
+          .filter((n) => /^(post|submit|comment|send|publish|reply)$/i.test(n.text.trim()) || /post comment|submit comment|add comment/i.test(n.label)),
+      );
+    console.log("  likely submit buttons (" + submits.length + "):");
+    for (const s of submits) console.log(`    - "${s.text}"  aria-label="${s.label}"  disabled=${s.disabled}`);
+
+    // Nothing matched, so widen the search rather than guess again.
+    // An editor can live in an iframe, which page.locator() does not pierce.
+    const frames = page.frames();
+    console.log("  frames on page: " + frames.length);
+    for (const frame of frames) {
+      if (frame === page.mainFrame()) continue;
+      const count = await frame.locator("textarea, [contenteditable], [role=textbox]").count().catch(() => -1);
+      console.log(`    - ${frame.url().slice(0, 90)}  editable-ish: ${count}`);
+    }
+
+    // Some editors only set contenteditable on focus, so report anything that
+    // merely looks like an input surface.
+    const candidates = await page.evaluate(() => {
+      const out = [];
+      for (const el of Array.from(document.querySelectorAll("div,span,p,section"))) {
+        const text = (el.getAttribute("data-placeholder") ?? el.getAttribute("placeholder") ?? "") + " " + (el.getAttribute("aria-label") ?? "");
+        const cls = el.className && typeof el.className === "string" ? el.className : "";
+        if (/comment|editor|composer|reply|write|rich.?text/i.test(text + " " + cls)) {
+          const r = el.getBoundingClientRect();
+          if (r.width > 120 && r.height > 20) out.push({ tag: el.tagName.toLowerCase(), cls: String(cls).slice(0, 70), label: text.trim().slice(0, 60) });
+        }
+      }
+      return out.slice(0, 15);
+    });
+    console.log("  elements that look like a composer (" + candidates.length + "):");
+    for (const c of candidates) console.log(`    <${c.tag}> class="${c.cls}" label="${c.label}"`);
+
+    const shot = process.env.PROBE_SHOT;
+    if (shot) {
+      await page.screenshot({ path: shot, fullPage: false }).catch(() => undefined);
+      console.log("  screenshot: " + shot);
+    }
+  }
+} catch (error) {
+  console.log("  probe failed: " + (error instanceof Error ? error.message.split("\n")[0] : String(error)));
+}
+
 await survey("WISHLIST", "https://builder.aws.com/wishlist");
-await survey("HOME (for the + / create menu)", "https://builder.aws.com/");
 
 console.log("");
 console.log("Done. Nothing was clicked or submitted. Closing.");

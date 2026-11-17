@@ -46,3 +46,16 @@ create table if not exists encrypted_browser_state (
   auth_tag text not null,
   updated_at timestamptz not null default now()
 );
+
+-- Wishes this account has voted for. The vote control on Builder Center is a
+-- toggle that exposes no voted-state, so clicking one already voted REMOVES
+-- the vote. The page cannot be asked; this table is the only reliable memory.
+create table if not exists wish_votes (
+  wish_url text primary key,
+  title text not null,
+  utc_date text not null,
+  iso_week text not null,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists wish_votes_iso_week on wish_votes (iso_week);
