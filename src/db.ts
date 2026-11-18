@@ -201,3 +201,49 @@ export async function recentPublicationTitles(limit: number): Promise<string[]> 
   const result = await sql`select title from publications order by created_at desc limit ${limit}` as Array<{ title: string }>;
   return result.map((row) => row.title);
 }
+
+// --- Articles already acted on ---------------------------------------------
+//
+// The agent had no memory of what it liked. Comments were recorded, likes
+// were not, so every run re-examined articles it had liked days earlier and
+// learned the fact only by clicking: the 2026-11-18 run reported
+// ["already-liked", "liked"], having spent a card-resolve and a click
+// discovering something the database could have told it instantly.
+//
+// Both sets are fetched ONCE per run and filtered in memory. A query per
+// candidate would be twenty round trips to find three articles.
+
+export async function ensureLikedArticlesTable(): Promise<void> {
+  await sql`
+    create table if not exists liked_articles (
+      article_url text primary key,
+      title text not null default '',
+      utc_date text not null,
+      created_at timestamptz not null default now()
+    )
+  `;
+}
+
+export async function recordLike(articleUrl: string, title: string, utcDate: string): Promise<void> {
+  await sql`
+    insert into liked_articles (article_url, title, utc_date)
+    values (${articleUrl}, ${title}, ${utcDate})
+    on conflict (article_url) do nothing
+  `;
+}
+
+// Capped because this only needs to cover what search can return in one run.
+// An unbounded fetch would grow forever for no benefit.
+export async function likedArticleUrls(limit = 1000): Promise<Set<string>> {
+  const result = await sql`
+    select article_url from liked_articles order by created_at desc limit ${limit}
+  ` as Array<{ article_url: string }>;
+  return new Set(result.map((row) => row.article_url));
+}
+
+export async function commentedArticleUrls(limit = 1000): Promise<Set<string>> {
+  const result = await sql`
+    select distinct article_url from posted_comments order by article_url limit ${limit}
+  ` as Array<{ article_url: string }>;
+  return new Set(result.map((row) => row.article_url));
+}

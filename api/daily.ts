@@ -4,7 +4,7 @@ import { generateComment, passesQualityGate } from "../src/ai.js";
 import { BuilderBrowser } from "../src/browser.js";
 import { config } from "../src/config.js";
 import { notifyFailure } from "../src/notify.js";
-import { beginRun, failRun, finishRun, markCommentPosted, previouslyCommented, recentCommentBodies, recordComment, rememberArticle, reserveComment } from "../src/db.js";
+import { beginRun, commentedArticleUrls, ensureLikedArticlesTable, failRun, finishRun, likedArticleUrls, markCommentPosted, recentCommentBodies, recordComment, recordLike, rememberArticle, reserveComment } from "../src/db.js";
 
 // Vercel Hobby allows up to five minutes; Browser Run is still capped separately.
 export const maxDuration = 300;
@@ -35,7 +35,16 @@ export default async function handler(request: IncomingMessage, response: Server
     // Search first, home feed only as a fallback. The home page is a carousel
     // of promoted posts; search returns the busy community articles, ordered
     // here by the comment count printed on each result card.
-    const wanted = config.articlesPerDay * 6;
+    // Ask for a wide pool, not a tight one.
+    //
+    // This was articlesPerDay * 6, which at a quota of one meant six
+    // candidates. Now that articles already liked are skipped without being
+    // touched, six could all be ones from previous days - leaving nothing
+    // fresh and failing the run for lack of choice rather than lack of
+    // ability. Extra candidates are nearly free: they are scraped from a
+    // results panel that is already on screen, and searchManyOnPage stops
+    // running keywords the moment it has enough.
+    const wanted = Math.max(config.articlesPerDay * 6, 24);
     // Likes are taken DURING the search, while each query's results are still
     // rendered - that is the only moment their like buttons exist. Doing it
     // afterwards finds nothing, because the panel has been replaced by the
@@ -46,13 +55,29 @@ export default async function handler(request: IncomingMessage, response: Server
     // day, so the best candidates are usually ones it already liked. Counting
     // those as done would stop the run with zero new likes and break the very
     // streak it exists to keep.
+    // What this account has already acted on, fetched once. Skipping these
+    // before the browser touches them is the difference between knowing and
+    // discovering: the 2026-11-18 run reported ["already-liked", "liked"],
+    // having spent a card-resolve and a click learning something the database
+    // already knew. Straight past them to articles not seen before.
+    // Two sets, not one. Liking and commenting are different jobs: an article
+    // already liked is a poor LIKE target but a perfectly good COMMENT
+    // target, and merging them would discard candidates for no reason. Each
+    // action avoids only repeating itself.
+    await ensureLikedArticlesTable();
+    const alreadyLiked = await likedArticleUrls();
+    const alreadyCommented = await commentedArticleUrls();
+    const skipped: string[] = [];
+
     let freshLikes = 0;
     let likesExamined = 0;
-    const likeFromPanel = async (results: Array<{ url: string }>) => {
+    const likeFromPanel = async (results: Array<{ url: string; title?: string }>) => {
       for (const result of results) {
         if (freshLikes >= config.articlesPerDay) return;
-        // Bounded so a panel of entirely already-liked articles cannot spend
-        // the whole browser allowance walking the list.
+        // Free: no browser work at all, just a set lookup.
+        if (alreadyLiked.has(result.url)) { skipped.push(result.url); continue; }
+        // Bounded so a panel of unreachable cards cannot spend the whole
+        // browser allowance walking the list.
         if (likesExamined >= config.articlesPerDay + 8) return;
         likesExamined += 1;
         const outcome = await withTimeout(browser!.likeInFeed(result.url), 25_000, "timed-out");
@@ -60,7 +85,17 @@ export default async function handler(request: IncomingMessage, response: Server
         // like it on its own page.
         if (outcome === "not-found") continue;
         likeResults.push(outcome);
-        if (outcome === "liked") freshLikes += 1;
+        if (outcome === "liked") {
+          freshLikes += 1;
+          // Remember it now, so tomorrow's run skips it without looking.
+          await recordLike(result.url, result.title ?? "", utcDate);
+          alreadyLiked.add(result.url);
+        } else if (outcome === "already-liked") {
+          // Liked on some earlier day, before this table existed. Record it
+          // so the next run does not rediscover it the expensive way.
+          await recordLike(result.url, result.title ?? "", "pre-existing");
+          alreadyLiked.add(result.url);
+        }
       }
     };
 
@@ -78,8 +113,20 @@ export default async function handler(request: IncomingMessage, response: Server
     const visitLimit = config.autoPostComments ? Math.max(config.articlesPerDay, 3) : config.articlesPerDay;
     const selected = [];
     for (const candidate of candidates) {
-      if (!(await previouslyCommented(candidate.url))) selected.push(candidate);
+      // Set lookup instead of a query per candidate: twenty round trips to
+      // find three articles was the old cost.
+      if (!alreadyCommented.has(candidate.url)) selected.push(candidate);
       if (selected.length === visitLimit) break;
+    }
+
+    // Safety valve. Filtering is an optimisation, and an optimisation must
+    // never be the reason a streak breaks: if every candidate has been
+    // commented on before, fall back to the unfiltered list rather than doing
+    // nothing. postCommentOnPage checks for its own text before typing, so a
+    // repeat visit cannot produce a duplicate comment.
+    if (selected.length === 0 && candidates.length > 0) {
+      postOutcomes.push("all candidates seen before - falling back to the full list");
+      selected.push(...candidates.slice(0, visitLimit));
     }
 
     const priorComments = await recentCommentBodies();
@@ -185,6 +232,7 @@ export default async function handler(request: IncomingMessage, response: Server
       sessionCookies: refreshed.cookies,
       cloudflareAccount: browser.accountUsed,
       articleSource: source,
+      skippedAlreadyLiked: skipped.length,
       articlesRead: selected.length,
       articlesLiked: newLikes,
       likeOutcomes: likeResults,
