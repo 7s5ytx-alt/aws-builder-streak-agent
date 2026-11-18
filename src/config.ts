@@ -1,3 +1,34 @@
+// These two lists are declared BEFORE `config` on purpose.
+//
+// `config` is an object literal that calls queryList() and topicList() while
+// it is being built. Function declarations hoist, so the calls resolve - but
+// `const` does not initialize until its own line runs, so when these arrays
+// sat below `config` the module threw at import:
+//
+//   ReferenceError: Cannot access 'DEFAULT_QUERIES' before initialization
+//
+// That took production down for twelve hours on 2026-11-17. tsc cannot see
+// it (the temporal dead zone is a runtime ordering rule) and no local test
+// imported this file, because every testable module is deliberately free of
+// config imports. `npm run smoke` now imports it, which closes that hole.
+const DEFAULT_QUERIES = [
+  "articles",
+  "comment to comment",
+  "help for comments",
+  "aws free comments",
+  "help for aws certification",
+];
+
+const DEFAULT_TOPICS = [
+  "a practical detail of AWS Lambda cost or concurrency that is easy to get wrong",
+  "testing AWS integrations locally without a real AWS account",
+  "reading and reducing an unexpected AWS bill line item",
+  "IAM policy mistakes that fail open rather than closed",
+  "making CI pipelines fail loudly instead of silently passing",
+  "choosing between DynamoDB and a relational store for a specific access pattern",
+  "S3 storage classes and when the lifecycle transition actually pays for itself",
+];
+
 export const config = {
   cronSecret: required("CRON_SECRET"),
   databaseUrl: required("DATABASE_URL"),
@@ -104,13 +135,6 @@ function cloudflareAccounts(): CloudflareAccount[] {
   return accounts;
 }
 
-const DEFAULT_QUERIES = [
-  "articles",
-  "comment to comment",
-  "help for comments",
-  "aws free comments",
-  "help for aws certification",
-];
 
 function queryList(): string[] {
   const raw = process.env.SEARCH_QUERIES?.trim();
@@ -121,15 +145,6 @@ function queryList(): string[] {
   return queries.length > 0 ? queries : DEFAULT_QUERIES;
 }
 
-const DEFAULT_TOPICS = [
-  "a practical detail of AWS Lambda cost or concurrency that is easy to get wrong",
-  "testing AWS integrations locally without a real AWS account",
-  "reading and reducing an unexpected AWS bill line item",
-  "IAM policy mistakes that fail open rather than closed",
-  "making CI pipelines fail loudly instead of silently passing",
-  "choosing between DynamoDB and a relational store for a specific access pattern",
-  "S3 storage classes and when the lifecycle transition actually pays for itself",
-];
 
 function topicList(): string[] {
   const raw = process.env.ARTICLE_TOPICS?.trim();

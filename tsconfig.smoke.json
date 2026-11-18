@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "allowImportingTsExtensions": false,
+    "outDir": ".smoke-build"
+  },
+  "include": ["api/**/*.ts", "src/**/*.ts"]
+}
