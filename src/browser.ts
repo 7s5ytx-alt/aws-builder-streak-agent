@@ -9,6 +9,10 @@ import { loadBrowserState, saveBrowserState, type Candidate } from "./db.js";
 
 const BUILDER_ORIGIN = "https://builder.aws.com";
 
+// How long Cloudflare keeps the remote browser alive. Must exceed the run
+// deadline in api/daily.ts (200s) so the browser cannot vanish mid-run.
+const BROWSER_KEEP_ALIVE_MS = 240_000;
+
 // AWS plus the identity provider. Google's cookies are needed because Builder
 // Center refreshes its short-lived tokens through SSO; without them the
 // replayed session is anonymous within hours. Exported so the import endpoint
@@ -44,7 +48,20 @@ export class BuilderBrowser {
     // 429 at the handshake and costs nothing. Trying the next is free.
     const failures: string[] = [];
     for (const account of config.cfAccounts) {
-      const endpoint = `wss://api.cloudflare.com/client/v4/accounts/${account.accountId}/browser-run/devtools/browser?keep_alive=60000`;
+      // keep_alive must outlast the whole run, not one step.
+      //
+      // It was 60s, which fitted the old flow: open the home feed, like on
+      // the article page, done. The search flow is longer - two keyword
+      // queries, likes taken in the results, then an article load and an AI
+      // call - and on 2026-11-18 the browser was torn down mid-run with
+      // "Target page, context or browser has been closed" AFTER the like
+      // landed but BEFORE the comment, losing that day's comment streak.
+      //
+      // 240s sits comfortably above api/daily.ts's 200s deadline and below
+      // Vercel's 300s maxDuration. A longer window costs nothing against the
+      // ten free minutes a day: the allowance is spent on time the browser is
+      // actually alive, and close() runs in a finally block.
+      const endpoint = `wss://api.cloudflare.com/client/v4/accounts/${account.accountId}/browser-run/devtools/browser?keep_alive=${BROWSER_KEEP_ALIVE_MS}`;
       let browser: Browser;
       try {
         browser = await chromium.connectOverCDP(endpoint, { headers: { Authorization: `Bearer ${account.apiToken}` } });
