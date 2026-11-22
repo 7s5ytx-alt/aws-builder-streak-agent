@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { BuilderBrowser } from "../src/browser.js";
+import { BuilderBrowser, KEEPALIVE_KEEP_ALIVE_MS } from "../src/browser.js";
 import { config } from "../src/config.js";
 import { notifyFailure } from "../src/notify.js";
 
@@ -30,7 +30,7 @@ export default async function handler(request: IncomingMessage, response: Server
     // connect() already verifies the page is genuinely signed in and throws a
     // clear "session has expired" if not, so a dead session is reported here
     // rather than discovered by tomorrow's run.
-    browser = await BuilderBrowser.connect();
+    browser = await BuilderBrowser.connect(KEEPALIVE_KEEP_ALIVE_MS);
 
     // Give the page a moment to run its own refresh before we snapshot the
     // cookies. Without this pause we would save the same values we loaded.

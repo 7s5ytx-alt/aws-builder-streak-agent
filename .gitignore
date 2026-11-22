@@ -16,3 +16,5 @@ coverage/
 local-browser-profile/
 publish-failure.png
 .smoke-build/
+profile-probe.png
+streak-proof.png

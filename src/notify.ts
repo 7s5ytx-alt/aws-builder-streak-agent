@@ -1,4 +1,5 @@
 import { config } from "./config.js";
+import { describeRun, type RunReport } from "./report.js";
 
 // Failure alerts. Both channels are plain HTTPS calls, so neither adds a
 // dependency, and both are optional - whichever is configured gets used.
@@ -89,5 +90,67 @@ export async function notifyFailure(utcDate: string, message: string): Promise<A
     if (outcome.status === "fulfilled" && outcome.value) results.push(outcome.value);
     else if (outcome.status === "rejected") results.push({ channel: "unknown", ok: false, detail: String(outcome.reason).slice(0, 120) });
   }
+  return results;
+}
+
+// --- Success reports -------------------------------------------------------
+//
+// Until now Telegram spoke only when a run FAILED, so a working day was
+// silent and indistinguishable from an agent that had quietly stopped. These
+// send a plain-language account of what the run did, plus a screenshot of the
+// badge page as evidence.
+//
+// The screenshot matters more than it sounds. Everything else in a report is
+// the agent describing its own actions, which is exactly the kind of claim
+// that was wrong for three days running. A picture of Builder Center's own
+// badge grid is the site's account, not ours.
+
+// Telegram's sendPhoto takes multipart/form-data. Node's FormData and Blob
+// are global from Node 18, so no dependency is needed.
+async function sendTelegramPhoto(photo: Uint8Array, caption: string): Promise<AlertResult | null> {
+  const token = config.telegramBotToken;
+  const chatId = config.telegramChatId;
+  if (!token || !chatId) return null;
+  try {
+    const form = new FormData();
+    form.append("chat_id", chatId);
+    // Telegram rejects captions over 1024 characters, and rejects the whole
+    // request rather than truncating.
+    form.append("caption", caption.slice(0, 1024));
+    form.append("photo", new Blob([photo as BlobPart], { type: "image/png" }), "streak.png");
+
+    const response = await fetch(`https://api.telegram.org/bot${token}/sendPhoto`, { method: "POST", body: form });
+    if (response.ok) return { channel: "telegram-photo", ok: true };
+    return { channel: "telegram-photo", ok: false, detail: `${response.status} ${(await response.text()).slice(0, 120)}` };
+  } catch (error) {
+    return { channel: "telegram-photo", ok: false, detail: error instanceof Error ? error.message : "unknown" };
+  }
+}
+
+
+export type { RunReport };
+
+export async function notifySuccess(report: RunReport): Promise<AlertResult[]> {
+  const text = describeRun(report);
+  const results: AlertResult[] = [];
+
+  // Photo first when there is one: Telegram shows the caption under it, so
+  // the proof and the explanation arrive as a single message.
+  if (report.proof && report.proof.length > 0) {
+    const photo = await sendTelegramPhoto(report.proof, text);
+    if (photo) results.push(photo);
+    // Fall back to text if the photo could not be delivered, so a failed
+    // upload never costs the daily report itself.
+    if (!photo?.ok) {
+      const message = await sendTelegram(text);
+      if (message) results.push(message);
+    }
+  } else {
+    const message = await sendTelegram(text);
+    if (message) results.push(message);
+  }
+
+  const email = await sendEmail(`AWS Builder streak - ${report.utcDate}`, text);
+  if (email) results.push(email);
   return results;
 }

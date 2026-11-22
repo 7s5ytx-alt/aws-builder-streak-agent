@@ -3,7 +3,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { generateComment, passesQualityGate } from "../src/ai.js";
 import { BuilderBrowser } from "../src/browser.js";
 import { config } from "../src/config.js";
-import { notifyFailure } from "../src/notify.js";
+import { notifyFailure, notifySuccess } from "../src/notify.js";
+import type { Badge } from "../src/profile.js";
 import { beginRun, commentedArticleUrls, ensureLikedArticlesTable, failRun, finishRun, likedArticleUrls, markCommentPosted, recentCommentBodies, recordComment, recordLike, rememberArticle, reserveComment } from "../src/db.js";
 
 // Vercel Hobby allows up to five minutes; Browser Run is still capped separately.
@@ -27,6 +28,10 @@ export default async function handler(request: IncomingMessage, response: Server
   // error with no evidence attached.
   const likeResults: string[] = [];
   const postOutcomes: string[] = [];
+  // Titles, not just counts: a report that names what it liked and commented
+  // on can be checked at a glance; one that says "liked 1" cannot.
+  const likedTitles: string[] = [];
+  const commentedTitles: string[] = [];
 
   let browser: BuilderBrowser | undefined;
   try {
@@ -87,6 +92,7 @@ export default async function handler(request: IncomingMessage, response: Server
         likeResults.push(outcome);
         if (outcome === "liked") {
           freshLikes += 1;
+          if (result.title) likedTitles.push(result.title);
           // Remember it now, so tomorrow's run skips it without looking.
           await recordLike(result.url, result.title ?? "", utcDate);
           alreadyLiked.add(result.url);
@@ -201,6 +207,7 @@ export default async function handler(request: IncomingMessage, response: Server
 
       await markCommentPosted(utcDate, article.url);
       await recordComment(utcDate, article.url, attempt.body, result);
+      commentedTitles.push(article.title);
       posted += 1;
     }
     // The like IS the streak. A run that liked nothing has not done its job,
@@ -219,12 +226,37 @@ export default async function handler(request: IncomingMessage, response: Server
       );
     }
 
+    // Photograph the badge page while the browser is still alive. Bounded,
+    // and failure-tolerant: evidence is worth 45 seconds, never a streak. If
+    // this cannot be captured the report says so plainly rather than quietly
+    // presenting the agent's own account as confirmation.
+    const proof = await withTimeout(
+      browser.captureStreakProof(),
+      45_000,
+      { url: "", signedIn: false, badges: [] as Badge[], screenshot: undefined },
+    );
+
     // Carry the refreshed cookies forward before this browser is destroyed.
     // Without this the stored session ages from the moment of capture and
     // dies within hours, regardless of how often the agent runs.
     const refreshed = await browser.saveRefreshedState();
 
     await finishRun(utcDate);
+
+    // Tell the owner what happened. Telegram previously spoke only on
+    // failure, so a working day was silent and looked identical to an agent
+    // that had stopped running.
+    const reportAlerts = await notifySuccess({
+      utcDate,
+      liked: newLikes,
+      likedTitles,
+      commented: posted,
+      commentedTitles,
+      skippedAlreadyLiked: skipped.length,
+      articleSource: source,
+      badges: proof.badges,
+      proof: proof.screenshot,
+    });
     return sendJson(response, 200, {
       ok: true,
       utcDate,
@@ -239,6 +271,10 @@ export default async function handler(request: IncomingMessage, response: Server
       commentsDrafted: drafted,
       commentsPosted: posted,
       postOutcomes,
+      reportAlerts,
+      badgesRead: proof.badges.length,
+      badgesEarned: proof.badges.filter((badge) => badge.state === "earned").length,
+      proofPhoto: Boolean(proof.screenshot),
       note: config.autoPostComments ? "Comments were posted automatically." : "Comment drafts require user approval before publication.",
     });
   } catch (error) {

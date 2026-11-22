@@ -28,7 +28,10 @@
     "fix:wish": "node --experimental-strip-types scripts/fix-wish-service.ts",
     "verify:wish": "node --experimental-strip-types scripts/verify-wish.ts",
     "fix:tag": "node --experimental-strip-types scripts/fix-article-tag.ts",
-    "smoke": "node scripts/smoke.mjs"
+    "smoke": "node scripts/smoke.mjs",
+    "probe:profile": "node --experimental-strip-types scripts/probe-profile.ts",
+    "test:proof": "node --experimental-strip-types scripts/test-proof.ts",
+    "probe:badges": "node --experimental-strip-types scripts/probe-badges.ts"
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.0.2",

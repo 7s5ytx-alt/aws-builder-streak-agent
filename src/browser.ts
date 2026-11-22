@@ -2,6 +2,7 @@ import { postCommentOnPage } from "./comment.js";
 import { likeInFeedOnPage, searchManyOnPage, type SearchResult } from "./feed.js";
 import { findWishesOnPage, voteOnWishOnPage, type Wish } from "./wishlist.js";
 import { createArticle, createPost, createWish } from "./create.js";
+import { captureStreakProof as captureStreakProofOnPage, type StreakProof } from "./profile.js";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright-core";
 import { config } from "./config.js";
 import { decryptBrowserState, encryptBrowserState, type BrowserState } from "./crypto.js";
@@ -12,6 +13,19 @@ const BUILDER_ORIGIN = "https://builder.aws.com";
 // How long Cloudflare keeps the remote browser alive. Must exceed the run
 // deadline in api/daily.ts (200s) so the browser cannot vanish mid-run.
 const BROWSER_KEEP_ALIVE_MS = 240_000;
+
+// What a keepalive run asks for. It connects, settles, saves the refreshed
+// cookies and disconnects - seconds of work - so it must not reserve the same
+// four minutes the daily run needs.
+//
+// This caused a real outage. On 2026-11-18 keep_alive went from 60s to 240s
+// to stop the daily run being cut off mid-comment, but every one of the
+// twelve daily keepalive crons inherited it. The free allowance is spent on
+// browser ALIVE time, so the day's bill went from roughly thirteen minutes to
+// fifty-two, and on 2026-11-21 all three accounts were exhausted before the
+// daily run could start. That day recorded no like and no comment, which
+// broke the streak.
+export const KEEPALIVE_KEEP_ALIVE_MS = 20_000;
 
 // AWS plus the identity provider. Google's cookies are needed because Builder
 // Center refreshes its short-lived tokens through SSO; without them the
@@ -36,7 +50,10 @@ export class BuilderBrowser {
     readonly accountUsed: string,
   ) {}
 
-  static async connect(): Promise<BuilderBrowser> {
+  // keepAliveMs lets a short job ask for a short browser. Spending four
+  // minutes of allowance on twenty seconds of work is how the daily budget
+  // ran out on 2026-11-21.
+  static async connect(keepAliveMs: number = BROWSER_KEEP_ALIVE_MS): Promise<BuilderBrowser> {
     // Read the stored session BEFORE opening a browser. The old order opened
     // one first and only then discovered there was nothing to restore, which
     // spent Browser Run minutes to learn something the database already knew.
@@ -61,7 +78,7 @@ export class BuilderBrowser {
       // Vercel's 300s maxDuration. A longer window costs nothing against the
       // ten free minutes a day: the allowance is spent on time the browser is
       // actually alive, and close() runs in a finally block.
-      const endpoint = `wss://api.cloudflare.com/client/v4/accounts/${account.accountId}/browser-run/devtools/browser?keep_alive=${BROWSER_KEEP_ALIVE_MS}`;
+      const endpoint = `wss://api.cloudflare.com/client/v4/accounts/${account.accountId}/browser-run/devtools/browser?keep_alive=${keepAliveMs}`;
       let browser: Browser;
       try {
         browser = await chromium.connectOverCDP(endpoint, { headers: { Authorization: `Bearer ${account.apiToken}` } });
@@ -287,6 +304,12 @@ export class BuilderBrowser {
   // until it expired - which it did, in under four hours.
   //
   // Saving here means each successful visit moves the stored state forward.
+  // Photographs the badge page for the daily report. Bounded by the caller,
+  // because evidence is worth a few seconds but never a missed streak.
+  async captureStreakProof(): Promise<StreakProof> {
+    return captureStreakProofOnPage(this.page);
+  }
+
   async saveRefreshedState(): Promise<{ cookies: number; saved: boolean }> {
     try {
       const localStorage = await this.page
