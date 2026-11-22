@@ -43,12 +43,26 @@ export function isCapturedDomain(domain: string): boolean {
 }
 
 export class BuilderBrowser {
+  // When this browser was connected, so a run can report how long it held it.
+  // The free allowance is spent on browser ALIVE time, and not measuring that
+  // is how a keep_alive change quietly quadrupled the daily bill and
+  // exhausted all three accounts on 2026-11-21.
+  private readonly connectedAt = Date.now();
+
   private constructor(
     private readonly browser: Browser,
     private readonly context: BrowserContext,
     private readonly page: Page,
     readonly accountUsed: string,
+    // What was ASKED for. Cloudflare may hold the browser for this long after
+    // we disconnect, so the real bill can exceed the measured time - the
+    // report shows both rather than pretending one number is the truth.
+    readonly keepAliveMs: number,
   ) {}
+
+  aliveMs(): number {
+    return Date.now() - this.connectedAt;
+  }
 
   // keepAliveMs lets a short job ask for a short browser. Spending four
   // minutes of allowance on twenty seconds of work is how the daily budget
@@ -111,7 +125,7 @@ export class BuilderBrowser {
         if (signedOut || /sign-in|login/i.test(page.url())) {
           throw new Error("AWS Builder ID session has expired (the page still offers Sign in); run `npm run capture:local` again");
         }
-        return new BuilderBrowser(browser, context, page, account.label);
+        return new BuilderBrowser(browser, context, page, account.label, keepAliveMs);
       } catch (error) {
         await browser.close().catch(() => undefined);
         throw error;

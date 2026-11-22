@@ -17,7 +17,23 @@ export type RunReport = {
   articleSource: string;
   badges: Badge[];
   proof?: Uint8Array;
+  // Cloudflare Browser Run allowance: this run's measured time, and the
+  // day's running total per account.
+  browserAliveMs?: number;
+  browserAccount?: string;
+  usage?: Array<{ account: string; aliveMs: number; reservedMs: number; sessions: number }>;
 };
+
+// Ten free minutes per account per UTC day.
+const FREE_MS_PER_DAY = 10 * 60 * 1000;
+
+function humanMs(ms: number): string {
+  const seconds = Math.round(ms / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  return rest === 0 ? `${minutes}m` : `${minutes}m ${rest}s`;
+}
 
 // The streaks the daily run is actually working toward. Listed explicitly
 // because the badge page returns 21 badges and a phone notification should
@@ -82,6 +98,33 @@ export function describeRun(report: RunReport): string {
   }
   if (withProgress.length === 0 && earnedStreaks.length === 0 && idle.length === 0) {
     lines.push(`Streaks counting: ${streaks.filter((badge) => badge.state === "counting").length} of ${streaks.length}.`);
+  }
+
+  // Browser allowance. Both numbers are shown because only the first is
+  // certain: Cloudflare may keep the browser for the full keep_alive after
+  // we disconnect, so the real bill is probably nearer the reserved figure.
+  // Quoting one number as if it were the truth is what let the budget
+  // quadruple unnoticed.
+  if (report.browserAliveMs !== undefined) {
+    lines.push("");
+    lines.push(`Browser time: ${humanMs(report.browserAliveMs)} this run${report.browserAccount ? ` (${report.browserAccount})` : ""}.`);
+  }
+
+  if (report.usage && report.usage.length > 0) {
+    for (const account of report.usage) {
+      const reservedShare = Math.round((account.reservedMs / FREE_MS_PER_DAY) * 100);
+      lines.push(
+        `  ${account.account}: ${humanMs(account.aliveMs)} used, `
+        + `${humanMs(account.reservedMs)} reserved of 10m (${reservedShare}%), `
+        + `${account.sessions} session${account.sessions === 1 ? "" : "s"}`,
+      );
+    }
+    const worst = Math.max(...report.usage.map((account) => account.reservedMs));
+    if (worst > FREE_MS_PER_DAY * 0.8) {
+      // The warning that was missing on 2026-11-21, when every account was
+      // exhausted before the daily run could start.
+      lines.push("WARNING: close to the daily free limit. Runs will start failing.");
+    }
   }
 
   lines.push("");

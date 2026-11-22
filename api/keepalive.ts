@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { BuilderBrowser, KEEPALIVE_KEEP_ALIVE_MS } from "../src/browser.js";
+import { ensureBrowserUsageTable, recordBrowserUsage } from "../src/db.js";
 import { config } from "../src/config.js";
 import { notifyFailure } from "../src/notify.js";
 
@@ -37,11 +38,21 @@ export default async function handler(request: IncomingMessage, response: Server
     await browser.settle(6000);
 
     const refreshed = await browser.saveRefreshedState();
+
+    // Keepalives are the bulk of the daily browser bill - six of them against
+    // one daily run - so leaving them out of the total would make the budget
+    // report useless.
+    const aliveMs = browser.aliveMs();
+    await ensureBrowserUsageTable();
+    await recordBrowserUsage(new Date().toISOString().slice(0, 10), browser.accountUsed, aliveMs, browser.keepAliveMs);
+
     return sendJson(response, 200, {
       ok: true,
       cloudflareAccount: browser.accountUsed,
       sessionRefreshed: refreshed.saved,
       cookies: refreshed.cookies,
+      browserAliveSeconds: Math.round(aliveMs / 1000),
+      browserReservedSeconds: Math.round(browser.keepAliveMs / 1000),
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown failure";

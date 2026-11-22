@@ -5,6 +5,7 @@ import { BuilderBrowser } from "../src/browser.js";
 import { config } from "../src/config.js";
 import { notifyFailure, notifySuccess } from "../src/notify.js";
 import type { Badge } from "../src/profile.js";
+import { browserUsageFor, ensureBrowserUsageTable, recordBrowserUsage, type BrowserUsage } from "../src/db.js";
 import { beginRun, commentedArticleUrls, ensureLikedArticlesTable, failRun, finishRun, likedArticleUrls, markCommentPosted, recentCommentBodies, recordComment, recordLike, rememberArticle, reserveComment } from "../src/db.js";
 
 // Vercel Hobby allows up to five minutes; Browser Run is still capped separately.
@@ -243,6 +244,15 @@ export default async function handler(request: IncomingMessage, response: Server
 
     await finishRun(utcDate);
 
+    // Record this run's browser time and read the day's running total, so the
+    // report can say how much of the ten free minutes is gone. Nothing
+    // measured this before, which is why a keep_alive change could quadruple
+    // the bill unnoticed until every account hit 429.
+    const aliveMs = browser.aliveMs();
+    await ensureBrowserUsageTable();
+    await recordBrowserUsage(utcDate, browser.accountUsed, aliveMs, browser.keepAliveMs);
+    const usage: BrowserUsage[] = await browserUsageFor(utcDate).catch(() => []);
+
     // Tell the owner what happened. Telegram previously spoke only on
     // failure, so a working day was silent and looked identical to an agent
     // that had stopped running.
@@ -256,6 +266,9 @@ export default async function handler(request: IncomingMessage, response: Server
       articleSource: source,
       badges: proof.badges,
       proof: proof.screenshot,
+      browserAliveMs: aliveMs,
+      browserAccount: browser.accountUsed,
+      usage,
     });
     return sendJson(response, 200, {
       ok: true,
@@ -275,6 +288,8 @@ export default async function handler(request: IncomingMessage, response: Server
       badgesRead: proof.badges.length,
       badgesEarned: proof.badges.filter((badge) => badge.state === "earned").length,
       proofPhoto: Boolean(proof.screenshot),
+      browserAliveSeconds: Math.round(aliveMs / 1000),
+      browserUsageToday: usage,
       note: config.autoPostComments ? "Comments were posted automatically." : "Comment drafts require user approval before publication.",
     });
   } catch (error) {

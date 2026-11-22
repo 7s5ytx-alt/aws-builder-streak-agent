@@ -247,3 +247,64 @@ export async function commentedArticleUrls(limit = 1000): Promise<Set<string>> {
   ` as Array<{ article_url: string }>;
   return new Set(result.map((row) => row.article_url));
 }
+
+// --- Browser Run allowance -------------------------------------------------
+//
+// Cloudflare gives ten free Browser Run minutes per account per UTC day, and
+// says nothing about how much is left until a run gets a 429. Nothing was
+// measuring it, so when keep_alive went from 60s to 240s on 2026-11-18 the
+// daily bill quadrupled unnoticed and all three accounts were exhausted on
+// 2026-11-21, which broke the streak.
+//
+// Two numbers are kept, because only one of them is certain:
+//   alive_ms    - measured, connect to close. What we know.
+//   reserved_ms - the keep_alive asked for. Cloudflare may hold the browser
+//                 this long after we disconnect, so the real bill is probably
+//                 nearer this. Reporting both avoids inventing a precision
+//                 that does not exist.
+
+export async function ensureBrowserUsageTable(): Promise<void> {
+  await sql`
+    create table if not exists browser_usage (
+      utc_date text not null,
+      account_label text not null,
+      alive_ms bigint not null default 0,
+      reserved_ms bigint not null default 0,
+      sessions integer not null default 0,
+      primary key (utc_date, account_label)
+    )
+  `;
+}
+
+export async function recordBrowserUsage(
+  utcDate: string,
+  accountLabel: string,
+  aliveMs: number,
+  reservedMs: number,
+): Promise<void> {
+  await sql`
+    insert into browser_usage (utc_date, account_label, alive_ms, reserved_ms, sessions)
+    values (${utcDate}, ${accountLabel}, ${Math.round(aliveMs)}, ${Math.round(reservedMs)}, 1)
+    on conflict (utc_date, account_label) do update set
+      alive_ms = browser_usage.alive_ms + excluded.alive_ms,
+      reserved_ms = browser_usage.reserved_ms + excluded.reserved_ms,
+      sessions = browser_usage.sessions + 1
+  `;
+}
+
+export type BrowserUsage = { account: string; aliveMs: number; reservedMs: number; sessions: number };
+
+export async function browserUsageFor(utcDate: string): Promise<BrowserUsage[]> {
+  const result = await sql`
+    select account_label, alive_ms, reserved_ms, sessions
+    from browser_usage where utc_date = ${utcDate} order by account_label
+  ` as Array<{ account_label: string; alive_ms: string | number; reserved_ms: string | number; sessions: number }>;
+  // bigint comes back as a string from the driver; Number() keeps the rest of
+  // the code in plain milliseconds.
+  return result.map((row) => ({
+    account: row.account_label,
+    aliveMs: Number(row.alive_ms),
+    reservedMs: Number(row.reserved_ms),
+    sessions: row.sessions,
+  }));
+}
